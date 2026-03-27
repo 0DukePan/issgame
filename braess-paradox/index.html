@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Braess's Paradox — Selfish Routing Simulator</title>
+  <meta name="description" content="Interactive demonstration of Braess's Paradox and selfish routing in network optimization using Game Theory.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ═══════════ HEADER ═══════════ -->
+  <header id="app-header">
+    <div class="header-left">
+      <div class="logo-icon">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <path d="M14 2L2 8v12l12 6 12-6V8L14 2z" stroke="url(#logoGrad)" stroke-width="2" fill="none"/>
+          <circle cx="8" cy="12" r="2.5" fill="#6ee7b7"/>
+          <circle cx="20" cy="12" r="2.5" fill="#f87171"/>
+          <circle cx="14" cy="20" r="2.5" fill="#fbbf24"/>
+          <line x1="8" y1="12" x2="20" y2="12" stroke="#6ee7b7" stroke-width="1.5" opacity="0.5"/>
+          <line x1="8" y1="12" x2="14" y2="20" stroke="#fbbf24" stroke-width="1.5" opacity="0.5"/>
+          <line x1="20" y1="12" x2="14" y2="20" stroke="#f87171" stroke-width="1.5" opacity="0.5"/>
+          <defs><linearGradient id="logoGrad" x1="0" y1="0" x2="28" y2="28"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#6ee7b7"/></linearGradient></defs>
+        </svg>
+      </div>
+      <div>
+        <h1>Braess's Paradox</h1>
+        <p class="subtitle">Selfish Routing & Network Optimization</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <button id="btn-explain" class="btn btn-ghost" title="Toggle explanations">
+        <span class="btn-icon">📖</span> Explain Mode
+      </button>
+      <button id="btn-guided-demo" class="btn btn-accent" title="Run guided demo">
+        <span class="btn-icon">▶</span> Guided Demo
+      </button>
+    </div>
+  </header>
+
+  <!-- ═══════════ MAIN LAYOUT ═══════════ -->
+  <main id="app-main">
+
+    <!-- ──── LEFT SIDEBAR ──── -->
+    <aside id="sidebar">
+
+      <!-- Scenario Selector -->
+      <div class="panel" id="panel-scenario">
+        <h3 class="panel-title">📡 Network Scenario</h3>
+        <select id="select-scenario">
+          <option value="braess">Classic Braess's Paradox</option>
+          <option value="pigou">Pigou's Example</option>
+          <option value="mesh">6-Node Mesh</option>
+        </select>
+        <p id="scenario-desc" class="muted"></p>
+      </div>
+
+      <!-- Traffic Demand -->
+      <div class="panel" id="panel-demand">
+        <h3 class="panel-title">🚗 Traffic Demand</h3>
+        <div class="slider-row">
+          <input type="range" id="slider-demand" min="0.1" max="3" step="0.1" value="1">
+          <span id="demand-value" class="slider-value">1.0</span>
+        </div>
+      </div>
+
+      <!-- Braess Edge Toggle -->
+      <div class="panel braess-panel" id="panel-braess">
+        <h3 class="panel-title">⚡ Braess Edge (C → D)</h3>
+        <div class="toggle-row">
+          <label class="toggle-switch">
+            <input type="checkbox" id="toggle-braess" checked>
+            <span class="toggle-slider"></span>
+          </label>
+          <span id="braess-status" class="toggle-label">ON — Paradox Active</span>
+        </div>
+        <div id="braess-explain" class="explain-box hidden">
+          <p>⚠️ <strong>Braess's Paradox:</strong> Adding this zero-cost shortcut <em>increases</em> total network latency because every selfish user rushes to use it, creating new bottlenecks.</p>
+        </div>
+      </div>
+
+      <!-- Edge Editor -->
+      <div class="panel" id="panel-edges">
+        <h3 class="panel-title">🔧 Edge Parameters</h3>
+        <div id="edge-list" class="edge-list"></div>
+      </div>
+
+      <!-- Simulation Controls -->
+      <div class="panel" id="panel-simulation">
+        <h3 class="panel-title">⏱️ Step-by-Step Simulation</h3>
+        <div class="sim-controls">
+          <button id="btn-sim-reset" class="btn btn-sm" title="Reset">⏮</button>
+          <button id="btn-sim-back" class="btn btn-sm" title="Step back">◀</button>
+          <button id="btn-sim-play" class="btn btn-sm btn-accent" title="Play/Pause">▶</button>
+          <button id="btn-sim-forward" class="btn btn-sm" title="Step forward">▶▶</button>
+        </div>
+        <div class="sim-info">
+          <span>Iteration: <strong id="sim-iter">0</strong> / <strong id="sim-total">0</strong></span>
+          <span>Gap: <strong id="sim-gap">—</strong></span>
+        </div>
+        <canvas id="convergence-chart" width="280" height="120"></canvas>
+      </div>
+
+      <!-- Save / Load / Export -->
+      <div class="panel" id="panel-io">
+        <h3 class="panel-title">💾 Save & Export</h3>
+        <div class="btn-group">
+          <button id="btn-save" class="btn btn-sm">Save Config</button>
+          <button id="btn-load" class="btn btn-sm">Load Config</button>
+          <button id="btn-export-csv" class="btn btn-sm">Export CSV</button>
+        </div>
+        <input type="file" id="file-input" accept=".json" style="display:none">
+      </div>
+
+    </aside>
+
+    <!-- ──── CENTER: GRAPH CANVAS ──── -->
+    <section id="canvas-section">
+      <canvas id="network-canvas"></canvas>
+      <!-- Guided Demo Overlay -->
+      <div id="demo-overlay" class="hidden">
+        <div class="demo-card">
+          <p id="demo-text"></p>
+          <button id="demo-next" class="btn btn-accent">Next →</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ──── RIGHT PANEL: METRICS ──── -->
+    <aside id="metrics-panel">
+
+      <!-- Quick Stats -->
+      <div class="panel metrics-hero">
+        <div class="metric-card nash-card">
+          <span class="metric-label">Nash Equilibrium</span>
+          <span class="metric-value" id="metric-nash-cost">—</span>
+          <span class="metric-sub">Total System Cost</span>
+        </div>
+        <div class="metric-card opt-card">
+          <span class="metric-label">System Optimum</span>
+          <span class="metric-value" id="metric-opt-cost">—</span>
+          <span class="metric-sub">Total System Cost</span>
+        </div>
+      </div>
+
+      <!-- Price of Anarchy Gauge -->
+      <div class="panel" id="panel-poa">
+        <h3 class="panel-title">🔥 Price of Anarchy</h3>
+        <div class="poa-gauge">
+          <canvas id="poa-canvas" width="240" height="140"></canvas>
+          <div class="poa-value-wrap">
+            <span class="poa-number" id="poa-value">1.00</span>
+            <span class="poa-label">PoA = Nash / Optimum</span>
+          </div>
+        </div>
+        <div id="poa-explain" class="explain-box hidden">
+          <p>📊 <strong>Price of Anarchy</strong> measures how much worse selfish routing is compared to optimal. PoA = 1 means no loss; PoA > 1 means selfishness hurts everyone.</p>
+        </div>
+      </div>
+
+      <!-- Efficiency Loss -->
+      <div class="panel">
+        <h3 class="panel-title">📉 Efficiency Loss</h3>
+        <div class="efficiency-bar-wrap">
+          <div class="efficiency-bar" id="efficiency-bar" style="width:0%"></div>
+          <span class="efficiency-pct" id="efficiency-pct">0%</span>
+        </div>
+        <p class="muted" id="efficiency-explain-text" style="margin-top:8px; display:none;">
+          This represents the percentage of wasted resources due to selfish behavior.
+        </p>
+      </div>
+
+      <!-- Flow Comparison Chart -->
+      <div class="panel">
+        <h3 class="panel-title">📊 Flow Comparison</h3>
+        <canvas id="flow-chart" width="300" height="200"></canvas>
+      </div>
+
+      <!-- Average Latency -->
+      <div class="panel">
+        <h3 class="panel-title">⏱ Average Latency</h3>
+        <div class="latency-row">
+          <div class="lat-item">
+            <span class="lat-label">Nash</span>
+            <span class="lat-val" id="lat-nash">—</span>
+          </div>
+          <div class="lat-item">
+            <span class="lat-label">Optimal</span>
+            <span class="lat-val" id="lat-opt">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Math Info (Explain Mode) -->
+      <div class="panel explain-panel hidden" id="panel-math">
+        <h3 class="panel-title">🧠 Mathematical Foundation</h3>
+        <div class="math-section">
+          <p><strong>Wardrop Equilibrium:</strong> All used paths have equal and minimal cost. No user can reduce their latency by switching paths.</p>
+          <p><strong>Beckmann Objective:</strong><br><code>min Σₑ ∫₀ˣₑ lₑ(t) dt</code></p>
+          <p><strong>System Optimum:</strong><br><code>min Σₑ xₑ · lₑ(xₑ)</code></p>
+          <p><strong>Marginal Cost:</strong> For L(x)=ax+b:<br><code>MC(x) = 2ax + b</code></p>
+          <p><strong>Price of Anarchy:</strong><br><code>PoA = C(Nash) / C(Optimum) ≥ 1</code></p>
+        </div>
+      </div>
+
+    </aside>
+  </main>
+
+  <!-- Hidden load file input -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>
