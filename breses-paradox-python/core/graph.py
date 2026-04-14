@@ -19,19 +19,27 @@ import numpy as np
 class LatencyFunction:
     """Latency function L(x) on a network edge.
 
-    Supports three types:
+    Supports four types:
     - linear:     L(x) = a*x + b
     - polynomial: L(x) = a*x² + b*x + c
     - log:        L(x) = a*ln(1+x) + b
+    - bpr:        L(x) = t0 * (1 + alpha * (x/capacity)^beta)
     """
     type: str = 'linear'
     a: float = 1.0
     b: float = 0.0
     c: float = 0.0
+    # BPR parameters
+    t0: float = 1.0       # free-flow travel time
+    alpha: float = 0.15   # BPR alpha (standard = 0.15)
+    beta: float = 4.0     # BPR beta  (standard = 4.0)
+    capacity: float = 1.0 # road capacity
 
     def cost(self, x: float) -> float:
         """Compute latency at flow x."""
-        if self.type == 'polynomial':
+        if self.type == 'bpr':
+            return self.t0 * (1 + self.alpha * (x / max(self.capacity, 1e-9))**self.beta)
+        elif self.type == 'polynomial':
             return self.a * x**2 + self.b * x + self.c
         elif self.type == 'log':
             return self.a * np.log(1 + x) + self.b
@@ -40,7 +48,9 @@ class LatencyFunction:
 
     def cost_vec(self, x: np.ndarray) -> np.ndarray:
         """Vectorized cost computation."""
-        if self.type == 'polynomial':
+        if self.type == 'bpr':
+            return self.t0 * (1 + self.alpha * (x / max(self.capacity, 1e-9))**self.beta)
+        elif self.type == 'polynomial':
             return self.a * x**2 + self.b * x + self.c
         elif self.type == 'log':
             return self.a * np.log(1 + x) + self.b
@@ -49,7 +59,11 @@ class LatencyFunction:
 
     def marginal_cost(self, x: float) -> float:
         """Marginal cost: d/dx [x * L(x)] for System Optimum."""
-        if self.type == 'polynomial':
+        if self.type == 'bpr':
+            C = max(self.capacity, 1e-9)
+            ratio = x / C
+            return self.t0 * (1 + self.alpha * (1 + self.beta) * ratio**self.beta)
+        elif self.type == 'polynomial':
             return 3 * self.a * x**2 + 2 * self.b * x + self.c
         elif self.type == 'log':
             return self.a * np.log(1 + x) + self.a * x / (1 + x) + self.b
@@ -58,7 +72,11 @@ class LatencyFunction:
 
     def marginal_cost_vec(self, x: np.ndarray) -> np.ndarray:
         """Vectorized marginal cost."""
-        if self.type == 'polynomial':
+        if self.type == 'bpr':
+            C = max(self.capacity, 1e-9)
+            ratio = x / C
+            return self.t0 * (1 + self.alpha * (1 + self.beta) * ratio**self.beta)
+        elif self.type == 'polynomial':
             return 3 * self.a * x**2 + 2 * self.b * x + self.c
         elif self.type == 'log':
             return self.a * np.log(1 + x) + self.a * x / (1 + x) + self.b
@@ -67,7 +85,10 @@ class LatencyFunction:
 
     def cost_integral(self, x: float) -> float:
         """∫₀ˣ L(t) dt — for Beckmann objective."""
-        if self.type == 'polynomial':
+        if self.type == 'bpr':
+            C = max(self.capacity, 1e-9)
+            return self.t0 * (x + self.alpha / (self.beta + 1) * x * (x / C)**self.beta)
+        elif self.type == 'polynomial':
             return (self.a * x**3) / 3 + (self.b * x**2) / 2 + self.c * x
         elif self.type == 'log':
             return self.a * ((1 + x) * np.log(1 + x) - x) + self.b * x
@@ -75,7 +96,9 @@ class LatencyFunction:
             return (self.a * x**2) / 2 + self.b * x
 
     def __str__(self) -> str:
-        if self.type == 'polynomial':
+        if self.type == 'bpr':
+            return f"BPR(t₀={self.t0}, C={self.capacity})"
+        elif self.type == 'polynomial':
             parts = []
             if self.a != 0: parts.append(f"{self.a}x²")
             if self.b != 0: parts.append(f"{'+' if self.b > 0 and parts else ''}{self.b}x")
@@ -93,7 +116,11 @@ class LatencyFunction:
             return ''.join(parts) or '0'
 
     def to_dict(self) -> dict:
-        return {'type': self.type, 'a': self.a, 'b': self.b, 'c': self.c}
+        d = {'type': self.type, 'a': self.a, 'b': self.b, 'c': self.c}
+        if self.type == 'bpr':
+            d.update({'t0': self.t0, 'alpha': self.alpha,
+                      'beta': self.beta, 'capacity': self.capacity})
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> 'LatencyFunction':
@@ -101,7 +128,11 @@ class LatencyFunction:
             type=d.get('type', 'linear'),
             a=d.get('a', 1.0),
             b=d.get('b', 0.0),
-            c=d.get('c', 0.0)
+            c=d.get('c', 0.0),
+            t0=d.get('t0', 1.0),
+            alpha=d.get('alpha', 0.15),
+            beta=d.get('beta', 4.0),
+            capacity=d.get('capacity', 1.0)
         )
 
 
@@ -116,6 +147,13 @@ class NetworkEdge:
     is_braess: bool = False
     enabled: bool = True
     label: str = ''
+    toll: float = 0.0  # Pigouvian toll (added to user-perceived cost)
+
+    def perceived_cost(self, x: float = None) -> float:
+        """Cost seen by user: latency + toll."""
+        if x is None:
+            x = self.flow
+        return self.latency.cost(x) + self.toll
 
     def total_cost(self) -> float:
         return self.flow * self.latency.cost(self.flow)
@@ -126,7 +164,8 @@ class NetworkEdge:
             'latency': self.latency.to_dict(),
             'is_braess': self.is_braess,
             'enabled': self.enabled,
-            'label': self.label
+            'label': self.label,
+            'toll': self.toll
         }
 
     @staticmethod
@@ -137,7 +176,8 @@ class NetworkEdge:
             latency=LatencyFunction.from_dict(d.get('latency', {})),
             is_braess=d.get('is_braess', False),
             enabled=d.get('enabled', True),
-            label=d.get('label', '')
+            label=d.get('label', ''),
+            toll=d.get('toll', 0.0)
         )
         return e
 
@@ -168,6 +208,8 @@ class NetworkGraph:
         self.source: Optional[str] = None
         self.sink: Optional[str] = None
         self.demand: float = 1.0
+        # OD Matrix: list of (origin, destination, demand) tuples
+        self.od_pairs: List[Tuple[str, str, float]] = []
 
     def add_node(self, id: str, x: float = 0, y: float = 0,
                  label: str = '') -> NetworkNode:
@@ -282,13 +324,34 @@ class NetworkGraph:
     def clone(self) -> 'NetworkGraph':
         return copy.deepcopy(self)
 
+    def remove_node(self, node_id: str):
+        """Remove a node and all connected edges."""
+        self.nodes.pop(node_id, None)
+        to_remove = [eid for eid, e in self.edges.items()
+                     if e.from_node == node_id or e.to_node == node_id]
+        for eid in to_remove:
+            self.edges.pop(eid, None)
+        if self.source == node_id:
+            self.source = None
+        if self.sink == node_id:
+            self.sink = None
+
+    def clear_tolls(self):
+        """Remove all tolls."""
+        for e in self.edges.values():
+            e.toll = 0.0
+
     def to_dict(self) -> dict:
-        return {
+        d = {
             'nodes': [n.to_dict() for n in self.nodes.values()],
             'edges': [e.to_dict() for e in self.edges.values()],
             'source': self.source, 'sink': self.sink,
             'demand': self.demand
         }
+        if self.od_pairs:
+            d['od_pairs'] = [{'o': o, 'd': dd, 'demand': dm}
+                             for o, dd, dm in self.od_pairs]
+        return d
 
     @staticmethod
     def from_dict(d: dict) -> 'NetworkGraph':
@@ -302,6 +365,8 @@ class NetworkGraph:
         g.source = d.get('source')
         g.sink = d.get('sink')
         g.demand = d.get('demand', 1.0)
+        for od in d.get('od_pairs', []):
+            g.od_pairs.append((od['o'], od['d'], od['demand']))
         return g
 
     def to_json(self, indent: int = 2) -> str:

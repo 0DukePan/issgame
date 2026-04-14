@@ -95,7 +95,8 @@ def frank_wolfe(graph: NetworkGraph, use_marginal: bool = False,
             costs = np.array([e.latency.marginal_cost(x[edge_idx[e.id]])
                               for e in edges])
         else:
-            costs = np.array([e.latency.cost(x[edge_idx[e.id]])
+            # Nash: user-perceived cost = latency + toll
+            costs = np.array([e.latency.cost(x[edge_idx[e.id]]) + e.toll
                               for e in edges])
 
         # ── Step 2: Shortest path → all-or-nothing assignment ──
@@ -168,7 +169,7 @@ def _line_search(edges, edge_idx, x, y, use_marginal, n_bisect=30):
             i = edge_idx[e.id]
             x_new = x[i] + mid * (y[i] - x[i])
             c = e.latency.marginal_cost(x_new) if use_marginal \
-                else e.latency.cost(x_new)
+                else e.latency.cost(x_new) + e.toll
             grad += c * (y[i] - x[i])
         if grad < 0:
             lo = mid
@@ -234,6 +235,46 @@ def compare(graph: NetworkGraph, **kwargs) -> ComparisonResult:
         price_of_anarchy=poa,
         efficiency_loss=eff_loss
     )
+
+
+def compute_pigouvian_tolls(graph: NetworkGraph) -> Dict[str, float]:
+    """
+    Compute optimal Pigouvian tolls for each edge.
+
+    The toll τₑ = xₑ* · lₑ'(xₑ*) evaluated at the System Optimum flow xₑ*.
+    This equals the marginal external cost: MC(x) - L(x).
+    When these tolls are applied, the Nash Equilibrium matches the System Optimum.
+
+    Returns dict mapping edge_id → toll value.
+    """
+    # First solve for System Optimum to get optimal flows
+    opt_g = graph.clone()
+    opt_g.clear_tolls()
+    opt_result = solve_system_optimum(opt_g)
+
+    tolls = {}
+    for e in opt_g.active_edges():
+        flow = opt_result.flows.get(e.id, 0.0)
+        # Toll = Marginal Social Cost - Private Cost
+        # τ(x) = MC(x) - L(x) = x·L'(x)
+        mc = e.latency.marginal_cost(flow)
+        pc = e.latency.cost(flow)
+        toll = max(0, mc - pc)  # toll can't be negative
+        tolls[e.id] = toll
+
+    return tolls
+
+
+def apply_pigouvian_tolls(graph: NetworkGraph) -> Dict[str, float]:
+    """
+    Compute and apply Pigouvian tolls to the graph edges.
+    After applying, solving Nash will yield System Optimum flows.
+    Returns the toll values for display.
+    """
+    tolls = compute_pigouvian_tolls(graph)
+    for e in graph.active_edges():
+        e.toll = tolls.get(e.id, 0.0)
+    return tolls
 
 
 def sensitivity_analysis(graph: NetworkGraph,

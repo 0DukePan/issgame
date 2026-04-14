@@ -20,8 +20,9 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
 from core.graph import NetworkGraph, LatencyFunction
-from core.solver import solve_nash, solve_system_optimum, compare, sensitivity_analysis
+from core.solver import solve_nash, solve_system_optimum, compare, sensitivity_analysis, apply_pigouvian_tolls
 from core.scenarios import SCENARIOS
+from core.report import generate_pdf_report
 from graph_canvas import GraphCanvas
 
 # ───────────────── Dark Stylesheet ─────────────────
@@ -40,13 +41,8 @@ QComboBox {
 QComboBox:hover { border-color: #818cf8; }
 QComboBox::drop-down { border: none; width: 24px; }
 QComboBox QAbstractItemView { background: #1a2235; color: #f1f5f9; selection-background-color: #818cf8; }
-QSlider::groove:horizontal {
-    height: 6px; background: #111827; border-radius: 3px;
-}
-QSlider::handle:horizontal {
-    width: 18px; height: 18px; margin: -6px 0; background: #818cf8;
-    border-radius: 9px;
-}
+QSlider::groove:horizontal { height: 6px; background: #111827; border-radius: 3px; }
+QSlider::handle:horizontal { width: 18px; height: 18px; margin: -6px 0; background: #818cf8; border-radius: 9px; }
 QSlider::handle:horizontal:hover { background: #6366f1; }
 QPushButton {
     background: #1a2235; border: 1px solid rgba(148,163,184,0.15);
@@ -66,10 +62,9 @@ QPushButton#braessBtn {
 QPushButton#warnBtn { background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.3); color: #f87171; }
 QLabel { color: #f1f5f9; }
 QLabel#muted { color: #64748b; font-size: 11px; }
-QLabel#metric { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 700; }
-QLabel#metricNash { color: #f87171; font-family: monospace; font-size: 20px; font-weight: 700; }
-QLabel#metricOpt { color: #34d399; font-family: monospace; font-size: 20px; font-weight: 700; }
-QLabel#poa { color: #fbbf24; font-family: monospace; font-size: 24px; font-weight: 800; }
+QLabel#metricNash { color: #f87171; font-family: monospace; font-size: 18px; font-weight: 700; }
+QLabel#metricOpt { color: #34d399; font-family: monospace; font-size: 18px; font-weight: 700; }
+QLabel#poa { color: #fbbf24; font-family: monospace; font-size: 22px; font-weight: 800; }
 QLabel#sectionTitle { color: #94a3b8; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
 QDoubleSpinBox {
     background: #0a0e1a; border: 1px solid rgba(148,163,184,0.15);
@@ -104,6 +99,7 @@ class MainWindow(QMainWindow):
         self.graph: NetworkGraph = None
         self.result = None
         self.explain_mode = False
+        self.tolls_active = False
 
         self._build_ui()
         self._bind_events()
@@ -149,6 +145,15 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.btn_demo)
         left_layout.addLayout(btn_row)
 
+        # Edit Mode + Tolls row
+        btn_row2 = QHBoxLayout()
+        self.btn_edit_mode = QPushButton("🛠 Edit Mode")
+        self.btn_tolls = QPushButton("💰 Apply Tolls")
+        self.btn_tolls.setObjectName("braessBtn")
+        btn_row2.addWidget(self.btn_edit_mode)
+        btn_row2.addWidget(self.btn_tolls)
+        left_layout.addLayout(btn_row2)
+
         # Scenario
         grp_scenario = QGroupBox("📡 Network Scenario")
         sl = QVBoxLayout(grp_scenario)
@@ -164,26 +169,47 @@ class MainWindow(QMainWindow):
 
         # Demand
         grp_demand = QGroupBox("🚗 Traffic Demand")
-        dl = QHBoxLayout(grp_demand)
+        dl = QVBoxLayout(grp_demand)
+        dl.setSpacing(4)
+        slider_row = QHBoxLayout()
         self.slider_demand = QSlider(Qt.Orientation.Horizontal)
         self.slider_demand.setRange(1, 30)
         self.slider_demand.setValue(10)
         self.slider_demand.setTickInterval(5)
-        dl.addWidget(self.slider_demand)
+        slider_row.addWidget(self.slider_demand)
         self.lbl_demand = QLabel("1.0")
-        self.lbl_demand.setStyleSheet("font-family:monospace; color:#818cf8; font-weight:600; min-width:30px;")
-        dl.addWidget(self.lbl_demand)
+        self.lbl_demand.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_demand.setStyleSheet(
+            "font-family:monospace; color:#818cf8; font-weight:700;"
+            "font-size:13px; min-width:38px; max-width:38px;"
+        )
+        slider_row.addWidget(self.lbl_demand)
+        dl.addLayout(slider_row)
+        lbl_range = QLabel("Range: 0.1 — 3.0 units")
+        lbl_range.setObjectName("muted")
+        dl.addWidget(lbl_range)
         left_layout.addWidget(grp_demand)
 
         # Braess Toggle
         self.grp_braess = QGroupBox("⚡ Braess Edge (C → D)")
         bl = QVBoxLayout(self.grp_braess)
-        self.chk_braess = QCheckBox("Enable Braess Edge")
+        bl.setSpacing(6)
+        # Inline row: checkbox + status badge
+        braess_top = QHBoxLayout()
+        self.chk_braess = QCheckBox("Enable shortcut edge")
         self.chk_braess.setChecked(True)
-        bl.addWidget(self.chk_braess)
-        self.lbl_braess_status = QLabel("ON — Paradox Active")
-        self.lbl_braess_status.setStyleSheet("color:#fbbf24; font-weight:600; font-size:11px;")
-        bl.addWidget(self.lbl_braess_status)
+        braess_top.addWidget(self.chk_braess)
+        braess_top.addStretch()
+        self.lbl_braess_status = QLabel("ON")
+        self.lbl_braess_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_braess_status.setFixedWidth(36)
+        self.lbl_braess_status.setStyleSheet(
+            "color:#0a0e1a; background:#fbbf24; font-weight:700;"
+            "font-size:10px; border-radius:4px; padding:2px 4px;"
+        )
+        braess_top.addWidget(self.lbl_braess_status)
+        bl.addLayout(braess_top)
+        # Status description line
         self.lbl_braess_explain = QLabel(
             "⚠️ Braess's Paradox: Adding this zero-cost shortcut INCREASES total "
             "network latency because every selfish user rushes to use it."
@@ -192,13 +218,31 @@ class MainWindow(QMainWindow):
         self.lbl_braess_explain.setObjectName("muted")
         self.lbl_braess_explain.setVisible(False)
         bl.addWidget(self.lbl_braess_explain)
-        self.grp_braess.setStyleSheet(self.grp_braess.styleSheet() + "QGroupBox{border-color:rgba(251,191,36,0.25);}")
+        self.grp_braess.setStyleSheet(
+            self.grp_braess.styleSheet() +
+            "QGroupBox{border-color:rgba(251,191,36,0.35);}"
+        )
         left_layout.addWidget(self.grp_braess)
 
-        # Edge Parameters
-        self.grp_edges = QGroupBox("🔧 Edge Parameters")
+        # Edge Parameters — COLLAPSIBLE (this was causing the overload)
+        self.btn_toggle_edges = QPushButton("🔧 Edge Parameters ▸")
+        self.btn_toggle_edges.setStyleSheet(
+            "QPushButton{text-align:left; padding:8px 14px; font-size:12px; font-weight:600;"
+            "color:#94a3b8; background:#1a2235; border:1px solid rgba(148,163,184,0.12); border-radius:10px;}"
+            "QPushButton:hover{border-color:#818cf8;}"
+        )
+        left_layout.addWidget(self.btn_toggle_edges)
+        self.grp_edges = QFrame()
+        self.grp_edges.setStyleSheet(
+            "QFrame{background:#1a2235; border:1px solid rgba(148,163,184,0.12);"
+            "border-radius:10px; padding:8px; margin-top:2px;}"
+        )
         self.edge_layout = QFormLayout(self.grp_edges)
+        self.edge_layout.setContentsMargins(8, 8, 8, 8)
+        self.edge_layout.setSpacing(6)
+        self.grp_edges.setVisible(False)  # COLLAPSED by default
         left_layout.addWidget(self.grp_edges)
+        self.btn_toggle_edges.clicked.connect(self._toggle_edge_panel)
 
         # Save/Load/Export
         grp_io = QGroupBox("💾 Save & Export")
@@ -216,6 +260,11 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.btn_csv)
         row2.addWidget(self.btn_sensitivity)
         io_layout.addLayout(row2)
+        row3 = QHBoxLayout()
+        self.btn_pdf = QPushButton("📄 PDF Report")
+        self.btn_pdf.setObjectName("accentBtn")
+        row3.addWidget(self.btn_pdf)
+        io_layout.addLayout(row3)
         left_layout.addWidget(grp_io)
 
         left_layout.addStretch()
@@ -233,15 +282,14 @@ class MainWindow(QMainWindow):
         right_scroll.setMaximumWidth(340)
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(12, 12, 12, 12)
-        right_layout.setSpacing(10)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setSpacing(4)
 
-        # Nash card
+        # Nash vs Opt cards — side by side
+        cards = QHBoxLayout()
         nash_card = QFrame()
-        nash_card.setStyleSheet("QFrame{background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.2);border-radius:10px;padding:8px;}")
+        nash_card.setStyleSheet("QFrame{background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.2);border-radius:10px;padding:10px;}")
         nc_l = QVBoxLayout(nash_card)
-        nc_l.setContentsMargins(6, 6, 6, 6)
-        nc_l.setSpacing(2)
         nc_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
         nc_l.addWidget(self._make_label("NASH EQUILIBRIUM", "sectionTitle", align=Qt.AlignmentFlag.AlignCenter))
         self.lbl_nash_cost = QLabel("—")
@@ -249,14 +297,11 @@ class MainWindow(QMainWindow):
         self.lbl_nash_cost.setAlignment(Qt.AlignmentFlag.AlignCenter)
         nc_l.addWidget(self.lbl_nash_cost)
         nc_l.addWidget(self._make_label("Total System Cost", "muted", align=Qt.AlignmentFlag.AlignCenter))
-        right_layout.addWidget(nash_card)
+        cards.addWidget(nash_card)
 
-        # Opt card
         opt_card = QFrame()
-        opt_card.setStyleSheet("QFrame{background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.2);border-radius:10px;padding:8px;}")
+        opt_card.setStyleSheet("QFrame{background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.2);border-radius:10px;padding:10px;}")
         oc_l = QVBoxLayout(opt_card)
-        oc_l.setContentsMargins(6, 6, 6, 6)
-        oc_l.setSpacing(2)
         oc_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
         oc_l.addWidget(self._make_label("SYSTEM OPTIMUM", "sectionTitle", align=Qt.AlignmentFlag.AlignCenter))
         self.lbl_opt_cost = QLabel("—")
@@ -264,7 +309,8 @@ class MainWindow(QMainWindow):
         self.lbl_opt_cost.setAlignment(Qt.AlignmentFlag.AlignCenter)
         oc_l.addWidget(self.lbl_opt_cost)
         oc_l.addWidget(self._make_label("Total System Cost", "muted", align=Qt.AlignmentFlag.AlignCenter))
-        right_layout.addWidget(opt_card)
+        cards.addWidget(opt_card)
+        right_layout.addLayout(cards)
 
         # Price of Anarchy
         grp_poa = QGroupBox("🔥 Price of Anarchy")
@@ -362,10 +408,14 @@ class MainWindow(QMainWindow):
         self.chk_braess.toggled.connect(self._on_braess_toggle)
         self.btn_explain.clicked.connect(self._toggle_explain)
         self.btn_demo.clicked.connect(self._run_guided_demo)
+        self.btn_edit_mode.clicked.connect(self._toggle_edit_mode)
+        self.btn_tolls.clicked.connect(self._toggle_tolls)
         self.btn_save.clicked.connect(self._save_config)
         self.btn_load.clicked.connect(self._load_config)
         self.btn_csv.clicked.connect(self._export_csv)
         self.btn_sensitivity.clicked.connect(self._run_sensitivity)
+        self.btn_pdf.clicked.connect(self._export_pdf)
+        self.graph_canvas.graph_modified.connect(self._on_graph_modified)
 
     def _on_scenario_change(self):
         key = self.combo_scenario.currentData()
@@ -380,7 +430,18 @@ class MainWindow(QMainWindow):
             self._solve()
 
     def _on_braess_toggle(self, checked):
-        self.lbl_braess_status.setText("ON — Paradox Active" if checked else "OFF — No Shortcut")
+        if checked:
+            self.lbl_braess_status.setText("ON")
+            self.lbl_braess_status.setStyleSheet(
+                "color:#0a0e1a; background:#fbbf24; font-weight:700;"
+                "font-size:10px; border-radius:4px; padding:2px 4px;"
+            )
+        else:
+            self.lbl_braess_status.setText("OFF")
+            self.lbl_braess_status.setStyleSheet(
+                "color:#64748b; background:rgba(100,116,139,0.15); font-weight:700;"
+                "font-size:10px; border-radius:4px; padding:2px 4px;"
+            )
         if self.graph:
             for e in self.graph.edges.values():
                 if e.is_braess:
@@ -395,6 +456,12 @@ class MainWindow(QMainWindow):
         self.grp_math.setVisible(self.explain_mode)
         style = "QPushButton{background:rgba(129,140,248,0.2);border-color:#818cf8;}" if self.explain_mode else ""
         self.btn_explain.setStyleSheet(style)
+
+    def _toggle_edge_panel(self):
+        """Toggle visibility of the edge parameters panel."""
+        visible = not self.grp_edges.isVisible()
+        self.grp_edges.setVisible(visible)
+        self.btn_toggle_edges.setText("🔧 Edge Parameters ▾" if visible else "🔧 Edge Parameters ▸")
 
     # ═══════════════════════════════════════════════
     # SCENARIO & SOLVER
@@ -690,6 +757,62 @@ class MainWindow(QMainWindow):
             w.writerow(['Avg Latency', f"{self.result.nash.avg_latency:.4f}", f"{self.result.optimum.avg_latency:.4f}"])
             w.writerow(['Price of Anarchy', f"{self.result.price_of_anarchy:.4f}", '—'])
             w.writerow(['Efficiency Loss', f"{self.result.efficiency_loss:.2f}%", '—'])
+
+    def _export_pdf(self):
+        """Generate a formal PDF report of the current simulation."""
+        if not self.graph or not self.result:
+            QMessageBox.warning(self, "No Data", "Run a simulation first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save PDF Report", "braess_report.pdf", "PDF Files (*.pdf)")
+        if not path:
+            return
+        try:
+            generate_pdf_report(self.graph, self.result, path)
+            QMessageBox.information(self, "PDF Exported",
+                                   f"Report saved to:\n{path}")
+        except Exception as ex:
+            QMessageBox.critical(self, "Export Error", f"Failed: {ex}")
+
+    def _toggle_edit_mode(self):
+        """Toggle interactive network builder mode."""
+        editing = not self.graph_canvas.edit_mode
+        self.graph_canvas.set_edit_mode(editing)
+        if editing:
+            self.btn_edit_mode.setStyleSheet(
+                "QPushButton{background:rgba(129,140,248,0.25);border-color:#818cf8;color:#818cf8;}"
+            )
+        else:
+            self.btn_edit_mode.setStyleSheet("")
+        self.graph_canvas.redraw()
+
+    def _toggle_tolls(self):
+        """Apply or remove Pigouvian congestion tolls."""
+        if not self.graph:
+            return
+        self.tolls_active = not self.tolls_active
+        if self.tolls_active:
+            tolls = apply_pigouvian_tolls(self.graph)
+            self.btn_tolls.setText("💰 Remove Tolls")
+            self.btn_tolls.setStyleSheet(
+                "QPushButton{background:rgba(251,191,36,0.3);border-color:#fbbf24;color:#fbbf24;}"
+            )
+            # Show toll info
+            toll_info = "\n".join(f"  {eid}: τ={t:.4f}" for eid, t in tolls.items() if t > 0.001)
+            QMessageBox.information(self, "💰 Pigouvian Tolls Applied",
+                f"Optimal congestion tolls computed from System Optimum:\n\n"
+                f"{toll_info}\n\n"
+                f"Nash Equilibrium should now match System Optimum (PoA ≈ 1.0).")
+        else:
+            self.graph.clear_tolls()
+            self.btn_tolls.setText("💰 Apply Tolls")
+            self.btn_tolls.setStyleSheet("")
+        self._solve()
+
+    def _on_graph_modified(self):
+        """Called when the interactive canvas modifies the graph."""
+        self._build_edge_list()
+        if self.graph and self.graph.source and self.graph.sink:
+            self._solve()
 
     # ═══════════════════════════════════════════════
     # HELPERS
